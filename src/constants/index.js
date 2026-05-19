@@ -77,6 +77,13 @@ export const DEFAULT_TIMEOUT = 300000;
 export const DEFAULT_RETRY_TIMES = 3;
 
 /**
+ * 默认固定重试间隔（毫秒）
+ * 503/429 只有在上游响应体提供等待间隔/恢复时间时才会重试，实际等待使用该固定值。
+ * @type {number}
+ */
+export const DEFAULT_RETRY_INTERVAL_MS = 10000;
+
+/**
  * 默认最大请求体大小
  * @type {string}
  */

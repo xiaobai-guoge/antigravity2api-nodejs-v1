@@ -266,20 +266,25 @@ curl http://localhost:8045/v1/chat/completions \
 
 ### 429/503 自动重试配置
 
-所有 429/503 重试次数仅通过服务端配置控制（503 仅重试 MODEL_CAPACITY_EXHAUSTED 容量不足错误）：
+所有 429/503 重试仅通过服务端配置控制。只有上游错误响应体能提取到等待间隔或资源恢复时间时才会重试；提取不到时直接返回错误，避免盲目重试。
 
-- 全局默认重试次数（服务端配置）：
-  - 文件：`config.json` 中的 `other.retryTimes`
+- 全局默认重试配置（服务端配置）：
+  - 文件：`config.json` 中的 `other.retryTimes`、`other.retryIntervalMs`、`other.retryPollTokenWithQuota`
   - 示例：
     ```json
     "other": {
       "timeout": 300000,
       "retryTimes": 3,
+      "retryIntervalMs": 10000,
+      "retryPollTokenWithQuota": false,
       "skipProjectIdFetch": false,
       "useNativeAxios": false
     }
     ```
-  - 服务器始终使用这里配置的值作为 429/503 时的重试次数（默认 3 次）。
+  - `retryTimes`：最大重试次数（默认 3 次）。
+  - `retryIntervalMs`：固定重试间隔（默认 10000ms），不再使用短间隔指数退避。
+  - `retryPollTokenWithQuota`：开启后，重试前重新轮询对当前模型组仍有额度且未冷却的 Token。
+  - 长时间 429 额度耗尽会进入模型组冷却；未开启 Token 轮询时不会继续重试。
 
 ### 思维链响应格式
 

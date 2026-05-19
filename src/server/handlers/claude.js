@@ -62,41 +62,49 @@ export const handleClaudeRequest = async (req, res, isStream) => {
       return res.status(400).json(buildClaudeErrorPayload({ message: 'model is required' }, 400));
     }
 
-    const token = await tokenManager.getToken(model);
-    if (!token) {
-      throw new Error('没有可用的token，请运行 npm run login 获取token');
-    }
-
-    // 获取 tokenId 用于冷却状态管理
-    const tokenId = await tokenManager.getTokenId(token);
-
-    // 创建刷新额度的回调函数
-    const refreshQuota = async () => {
-      if (!tokenId) return;
-      const quotas = await getModelsWithQuotas(token);
-      quotaManager.updateQuota(tokenId, quotas);
-    };
-
     // 使用统一参数规范化模块处理 Claude 格式参数
     const parameters = normalizeClaudeParameters(rawParams);
 
     const isImageModel = model.includes('-image');
-    const requestBody = generateClaudeRequestBody(messages, model, parameters, tools, system, token);
+    let token = null;
+    let tokenId = null;
+    let requestBody = null;
 
-    if (isImageModel) {
-      prepareImageRequest(requestBody);
+    const applyTokenState = async (nextToken) => {
+      if (!nextToken) return false;
+
+      token = nextToken;
+      tokenId = await tokenManager.getTokenId(token);
+      requestBody = generateClaudeRequestBody(messages, model, parameters, tools, system, token);
+      if (isImageModel) {
+        prepareImageRequest(requestBody);
+      }
+      return true;
+    };
+
+    if (!await applyTokenState(await tokenManager.getToken(model))) {
+      throw new Error('没有可用的token，请运行 npm run login 获取token');
     }
+
+    const refreshQuota = async () => {
+      if (!tokenId || !token) return;
+      const quotas = await getModelsWithQuotas(token);
+      quotaManager.updateQuota(tokenId, quotas);
+    };
 
     // 创建 with429Retry 选项
     const createRetryOptions = (prefix) => ({
       loggerPrefix: prefix,
       onAttempt: () => tokenManager.recordRequest(token, model),
-      tokenId,
+      getTokenId: () => tokenId,
       modelId: model,
       refreshQuota,
       tokenManager,
-      token,
-      requestBody  // 传递 requestBody 用于积分注入
+      getToken: () => token,
+      onBeforeRetry: async ({ previousTokenId }) => {
+        const nextToken = await tokenManager.getTokenForRetry(model, previousTokenId);
+        return applyTokenState(nextToken);
+      }
     });
 
     const msgId = `msg_${Date.now()}`;

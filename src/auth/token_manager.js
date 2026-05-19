@@ -221,62 +221,79 @@ class TokenManager {
     this.pool.disable(tokenId);
     log.warn(`Token ${tokenId} 已被禁用`);
   }
-  /**
-   * 获取下一个可用的 token
-   * @param {string} modelId - 模型 ID
-   * @returns {Promise<Object|null>} token 对象或 null
-   */
-  async getNextToken(modelId) {
-    await this._ensureInitialized();
 
-    // 1. 获取所有启用的 tokens
-    let availableTokens = this.pool.getEnabledIds().map(tokenId => ({
+  /**
+   * 获取启用 token 条目
+   * @returns {Array<{tokenId: string, token: Object}>}
+   * @private
+   */
+  _getEnabledTokenEntries() {
+    return this.pool.getEnabledIds().map(tokenId => ({
       tokenId,
       token: this.pool.get(tokenId)
     }));
+  }
+
+  /**
+   * 按模型过滤可用 token；只有允许时才重置陈旧的额度标记，且重置后仍会重新校验冷却状态。
+   * @param {string} modelId - 模型 ID
+   * @param {Object} options - 过滤选项
+   * @param {boolean} options.allowQuotaReset - 是否允许重置 hasQuota 标记后重试过滤
+   * @returns {Promise<Array<{tokenId: string, token: Object}>>}
+   * @private
+   */
+  async _getAvailableTokenEntries(modelId, { allowQuotaReset = true } = {}) {
+    const enabledTokens = this._getEnabledTokenEntries();
+
+    if (enabledTokens.length === 0) {
+      log.error('没有可用的token');
+      return [];
+    }
+
+    if (!modelId) {
+      return enabledTokens;
+    }
+
+    let availableTokens = await this.validator.filterAvailableTokens(enabledTokens, modelId);
+    if (availableTokens.length > 0) {
+      return availableTokens;
+    }
+
+    if (allowQuotaReset) {
+      log.warn(`没有对模型 ${modelId} 可用的token，尝试重置本地额度标记后重新校验`);
+      this.pool.resetAllQuotas();
+      availableTokens = await this.validator.filterAvailableTokens(this._getEnabledTokenEntries(), modelId);
+    }
 
     if (availableTokens.length === 0) {
-      log.error('没有可用的token');
-      return null;
+      log.error(`没有对模型 ${modelId} 可用的token`);
     }
 
-    // 2. 如果提供了 modelId，过滤出对该模型可用的 tokens
-    if (modelId) {
-      availableTokens = await this.validator.filterAvailableTokens(availableTokens, modelId);
+    return availableTokens;
+  }
 
-      if (availableTokens.length === 0) {
-        // 检查是否所有 token 对该模型都不可用
-        const allTokens = this.pool.getEnabledIds().map(tokenId => ({
-          tokenId,
-          token: this.pool.get(tokenId)
-        }));
+  /**
+   * 从可用 token 中选择一个，并在必要时刷新。
+   * @param {string} modelId - 模型 ID
+   * @param {Object} options - 选择选项
+   * @param {boolean} options.allowQuotaReset - 是否允许重置本地额度标记
+   * @param {string|null} options.excludeTokenId - 有其他候选时排除指定 token
+   * @returns {Promise<Object|null>} token 对象或 null
+   * @private
+   */
+  async _selectToken(modelId, { allowQuotaReset = true, excludeTokenId = null } = {}) {
+    await this._ensureInitialized();
 
-        const allExhausted = await this.validator.areAllTokensExhausted(allTokens, modelId);
-        if (allExhausted) {
-          log.warn(`所有token对模型 ${modelId} 都不可用，重置额度状态`);
-          this.pool.resetAllQuotas();
-
-          // 重新获取可用 tokens
-          availableTokens = this.pool.getEnabledIds().map(tokenId => ({
-            tokenId,
-            token: this.pool.get(tokenId)
-          }));
-        } else {
-          log.error(`没有对模型 ${modelId} 可用的token`);
-          return null;
-        }
-      }
+    let availableTokens = await this._getAvailableTokenEntries(modelId, { allowQuotaReset });
+    if (excludeTokenId && availableTokens.length > 1) {
+      availableTokens = availableTokens.filter(({ tokenId }) => tokenId !== excludeTokenId);
     }
 
-    // 3. 使用策略选择 token
     const selected = this.strategy.selectToken(availableTokens);
-    if (!selected) {
-      return null;
-    }
+    if (!selected) return null;
 
     const { token, tokenId } = selected;
 
-    // 4. 检查是否需要刷新
     if (this.lifecycle.isExpired(token)) {
       try {
         await this.lifecycle.refreshToken(token, tokenId);
@@ -286,14 +303,12 @@ class TokenManager {
         if (error.statusCode === 403 || error.statusCode === 400) {
           await this.disableToken(token);
         }
-        return this.getNextToken(modelId);
+        return this._selectToken(modelId, { allowQuotaReset: false, excludeTokenId });
       }
     }
 
-    // 5. 记录使用
     const shouldSwitch = this.strategy.recordUsage(tokenId);
 
-    // 6. 如果是 request_count 策略且需要切换
     if (shouldSwitch && this.rotationStrategyName === RotationStrategy.REQUEST_COUNT) {
       this.strategy.switchToNext(availableTokens.length, tokenId);
     }
@@ -302,83 +317,35 @@ class TokenManager {
   }
 
   /**
-   * 获取下一个可用的 token
+   * 获取下一个可用的 token（兼容旧调用）
+   * @param {string} modelId - 模型 ID
+   * @returns {Promise<Object|null>} token 对象或 null
+   */
+  async getNextToken(modelId) {
+    return this.getToken(modelId);
+  }
+
+  /**
+   * 获取可用 token
    * @param {string} modelId - 模型 ID
    * @returns {Promise<Object|null>} token 对象或 null
    */
   async getToken(modelId) {
-    await this._ensureInitialized();
+    return this._selectToken(modelId, { allowQuotaReset: true });
+  }
 
-    // 1. 获取所有启用的 tokens
-    let availableTokens = this.pool.getEnabledIds().map(tokenId => ({
-      tokenId,
-      token: this.pool.get(tokenId)
-    }));
-
-    if (availableTokens.length === 0) {
-      log.error('没有可用的token');
-      return null;
-    }
-
-    // 2. 如果提供了 modelId，过滤出对该模型可用的 tokens
-    if (modelId) {
-      availableTokens = await this.validator.filterAvailableTokens(availableTokens, modelId);
-
-      if (availableTokens.length === 0) {
-        // 检查是否所有 token 对该模型都不可用
-        const allTokens = this.pool.getEnabledIds().map(tokenId => ({
-          tokenId,
-          token: this.pool.get(tokenId)
-        }));
-
-        const allExhausted = await this.validator.areAllTokensExhausted(allTokens, modelId);
-        if (allExhausted) {
-          log.warn(`所有token对模型 ${modelId} 都不可用，重置额度状态`);
-          this.pool.resetAllQuotas();
-
-          // 重新获取可用 tokens
-          availableTokens = this.pool.getEnabledIds().map(tokenId => ({
-            tokenId,
-            token: this.pool.get(tokenId)
-          }));
-        } else {
-          log.error(`没有对模型 ${modelId} 可用的token`);
-          return null;
-        }
-      }
-    }
-
-    // 3. 使用策略选择 token
-    const selected = this.strategy.selectToken(availableTokens);
-    if (!selected) {
-      return null;
-    }
-
-    const { token, tokenId } = selected;
-
-    // 4. 检查是否需要刷新
-    if (this.lifecycle.isExpired(token)) {
-      try {
-        await this.lifecycle.refreshToken(token, tokenId);
-        await this._persistToken(token);
-      } catch (error) {
-        log.error(`刷新token失败: ${error.message}`);
-        if (error.statusCode === 403 || error.statusCode === 400) {
-          await this.disableToken(token);
-        }
-        return this.getToken(modelId);
-      }
-    }
-
-    // 5. 记录使用
-    const shouldSwitch = this.strategy.recordUsage(tokenId);
-
-    // 6. 如果是 request_count 策略且需要切换
-    if (shouldSwitch && this.rotationStrategyName === RotationStrategy.REQUEST_COUNT) {
-      this.strategy.switchToNext(availableTokens.length, tokenId);
-    }
-
-    return token;
+  /**
+   * 重试前重新选择对当前模型组可用的 token。
+   * 不重置本地额度标记；如果存在其他候选，会避开刚失败的 token。
+   * @param {string} modelId - 模型 ID
+   * @param {string|null} previousTokenId - 刚失败的 tokenId
+   * @returns {Promise<Object|null>} token 对象或 null
+   */
+  async getTokenForRetry(modelId, previousTokenId = null) {
+    return this._selectToken(modelId, {
+      allowQuotaReset: false,
+      excludeTokenId: previousTokenId
+    });
   }
 
   /**

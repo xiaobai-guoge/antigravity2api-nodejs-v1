@@ -109,17 +109,29 @@ export const handleGeminiRequest = async (req, res, modelName, isStream) => {
       return res.status(validation.status).json(buildGeminiErrorPayload({ message: validation.message }, validation.status));
     }
 
-    const token = await tokenManager.getToken(modelName);
-    if (!token) {
+    const isImageModel = modelName.includes('-image');
+    let token = null;
+    let tokenId = null;
+    let requestBody = null;
+
+    const applyTokenState = async (nextToken) => {
+      if (!nextToken) return false;
+
+      token = nextToken;
+      tokenId = await tokenManager.getTokenId(token);
+      requestBody = generateGeminiRequestBody(body, modelName, token);
+      if (isImageModel) {
+        prepareImageRequest(requestBody);
+      }
+      return true;
+    };
+
+    if (!await applyTokenState(await tokenManager.getToken(modelName))) {
       throw new Error('没有可用的token，请运行 npm run login 获取token');
     }
 
-    // 获取 tokenId 用于冷却状态管理
-    const tokenId = await tokenManager.getTokenId(token);
-
-    // 创建刷新额度的回调函数
     const refreshQuota = async () => {
-      if (!tokenId) return;
+      if (!tokenId || !token) return;
       const quotas = await getModelsWithQuotas(token);
       quotaManager.updateQuota(tokenId, quotas);
     };
@@ -128,20 +140,16 @@ export const handleGeminiRequest = async (req, res, modelName, isStream) => {
     const createRetryOptions = (prefix) => ({
       loggerPrefix: prefix,
       onAttempt: () => tokenManager.recordRequest(token, modelName),
-      tokenId,
+      getTokenId: () => tokenId,
       modelId: modelName,
       refreshQuota,
       tokenManager,
-      token,
-      requestBody  // 传递 requestBody 用于积分注入
+      getToken: () => token,
+      onBeforeRetry: async ({ previousTokenId }) => {
+        const nextToken = await tokenManager.getTokenForRetry(modelName, previousTokenId);
+        return applyTokenState(nextToken);
+      }
     });
-
-    const isImageModel = modelName.includes('-image');
-    const requestBody = generateGeminiRequestBody(body, modelName, token);
-
-    if (isImageModel) {
-      prepareImageRequest(requestBody);
-    }
 
     if (isStream) {
       setStreamHeaders(res);

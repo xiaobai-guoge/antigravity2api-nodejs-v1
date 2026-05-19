@@ -11,6 +11,7 @@ import {
   DEFAULT_HEARTBEAT_INTERVAL,
   DEFAULT_TIMEOUT,
   DEFAULT_RETRY_TIMES,
+  DEFAULT_RETRY_INTERVAL_MS,
   DEFAULT_MAX_REQUEST_SIZE,
   DEFAULT_MAX_IMAGES,
   MODEL_LIST_CACHE_TTL,
@@ -416,6 +417,8 @@ export function buildConfig(jsonConfig, upstreamCfg = {}) {
     forceIPv4: jsonConfig.other?.forceIPv4 === true,
     timeout: jsonConfig.other?.timeout || DEFAULT_TIMEOUT,
     retryTimes: Number.isFinite(jsonConfig.other?.retryTimes) ? jsonConfig.other.retryTimes : DEFAULT_RETRY_TIMES,
+    retryIntervalMs: Number.isFinite(jsonConfig.other?.retryIntervalMs) ? jsonConfig.other.retryIntervalMs : DEFAULT_RETRY_INTERVAL_MS,
+    retryPollTokenWithQuota: jsonConfig.other?.retryPollTokenWithQuota === true,
     proxy: getProxyConfig(),
     // 反代系统提示词（从 .env 读取，可在前端修改，空字符串代表不使用）
     systemInstruction: process.env.SYSTEM_INSTRUCTION ?? '',

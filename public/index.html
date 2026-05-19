@@ -656,6 +656,16 @@
                                             <span class="rotation-label">当前状态:</span>
                                             <span id="currentRotationInfo">加载中...</span>
                                         </div>
+                                        <div class="form-row-inline switch-row">
+                                            <div class="form-group compact switch-group">
+                                                <label>重试轮询有额度Token <span class="help-tip"
+                                                        data-tooltip="开启后，429/503重试前会重新选择对当前模型组仍有额度且不在冷却中的Token">?</span></label>
+                                                <label class="switch">
+                                                    <input type="checkbox" name="RETRY_POLL_TOKEN_WITH_QUOTA">
+                                                    <span class="slider"></span>
+                                                </label>
+                                            </div>
+                                        </div>
                                         <div class="form-row-inline">
                                             <div class="form-group compact">
                                                 <label>超时(ms)</label>
@@ -664,6 +674,11 @@
                                             <div class="form-group compact">
                                                 <label>429/503重试次数</label>
                                                 <input type="number" name="RETRY_TIMES" placeholder="0">
+                                            </div>
+                                            <div class="form-group compact">
+                                                <label>重试固定间隔(ms) <span class="help-tip"
+                                                        data-tooltip="只有错误响应体能提取到等待间隔或恢复时间时才重试，实际等待使用这里的固定间隔">?</span></label>
+                                                <input type="number" name="RETRY_INTERVAL_MS" placeholder="10000">
                                             </div>
                                         </div>
 

@@ -565,6 +565,9 @@ curl http://localhost:8045/v1/chat/completions \
   },
   "other": {
     "timeout": 300000,         // 请求超时时间（毫秒）
+    "retryTimes": 3,           // 429/503 最大重试次数
+    "retryIntervalMs": 10000,  // 429/503 固定重试间隔（毫秒）
+    "retryPollTokenWithQuota": false, // 重试前是否重新轮询有当前模型组额度的 Token
     "skipProjectIdFetch": false,// 跳过 ProjectId 获取，直接随机生成（仅 Pro 账号有效）
     "useNativeAxios": false,   // 使用原生 axios 而非 AntigravityRequester
     "useContextSystemPrompt": false, // 是否将请求中的 system 消息合并到 SystemInstruction
