@@ -538,9 +538,14 @@ class TokenManager {
    * @returns {Object} 配置对象
    */
   getRotationConfig() {
+    const currentIndex = Number.isInteger(this.strategy?.currentIndex)
+      ? this.strategy.currentIndex
+      : 0;
+
     return {
       strategy: this.rotationStrategyName,
-      requestCount: this.requestCountPerToken
+      requestCount: this.requestCountPerToken,
+      currentIndex
     };
   }
 

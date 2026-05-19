@@ -102,7 +102,9 @@ async function loadRotationStatus() {
                 if (strategy === 'request_count') {
                     statusText += ` (每${requestCount}次)`;
                 }
-                statusText += ` | 当前索引: ${currentIndex}`;
+                if (Number.isInteger(currentIndex)) {
+                    statusText += ` | 当前索引: ${currentIndex}`;
+                }
                 statusEl.textContent = statusText;
             }
         }
