@@ -10,7 +10,7 @@ import { buildRecordCodeAssistMetricsBody } from '../utils/recordCodeAssistMetri
 import { createTelemetryBatch, serializeTelemetryBatch } from "../utils/createTelemetry.js"
 import { createLog1, createLog2 } from "../utils/additionalLogs.js"
 import { buildClientRegister, buildFrontEnd, buildClientFeatrueHeaders, buildClientRegisterHeaders, buildFrontEndHeaders } from "../utils/unleash.js"
-import { MODEL_LIST_CACHE_TTL, QA_PAIRS } from '../constants/index.js';
+import { DEFAULT_RETRY_INTERVAL_MS, MODEL_LIST_CACHE_TTL, QA_PAIRS } from '../constants/index.js';
 import { createApiError } from '../utils/errors.js';
 import { generateCheckpointBody } from '../utils/checkPoint.js';
 import axios from 'axios';
@@ -182,9 +182,23 @@ function shouldFallback(error) {
   return false;
 }
 
+function getSafeUpstreamFallbackDelayMs() {
+  const value = Number(config.retryIntervalMs);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_RETRY_INTERVAL_MS;
+}
+
+function shouldWaitBeforeFallback(error) {
+  return getUpstreamStatus(error) === 503;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 /**
  * 带上游 baseURL fallback 的执行器
  * 按 config.api.upstreamCandidates 顺序尝试，遇到 503/网络错误/5xx 时自动切换下一个
+ * 503 属于容量/资源临时不可用，切换下一个上游前也按固定重试间隔等待
  * 429/403/400 等不 fallback，直接抛出让上层处理
  *
  * @param {Function} fn - (candidate) => Promise，candidate 包含 { name, url, noStreamUrl, host, ... }
@@ -198,7 +212,8 @@ async function withUpstreamFallback(fn) {
     return fn(null);
   }
   let lastError = null;
-  for (const candidate of candidates) {
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
     try {
       return await fn(candidate);
     } catch (error) {
@@ -207,10 +222,20 @@ async function withUpstreamFallback(fn) {
         throw error; // 429/403/400 等不应 fallback 的错误直接抛出
       }
       const status = getUpstreamStatus(error);
-      logger.warn(
-        `[upstream-fallback] ${candidate.name} 失败 (${status || 'network error'}: ${error.message?.substring(0, 100)})，` +
-        `尝试下一个上游...`
-      );
+      const nextCandidate = candidates[index + 1];
+      if (nextCandidate && shouldWaitBeforeFallback(error)) {
+        const retryIntervalMs = getSafeUpstreamFallbackDelayMs();
+        logger.warn(
+          `[upstream-fallback] ${candidate.name} 失败 (${status || 'network error'}: ${error.message?.substring(0, 100)})，` +
+          `等待固定间隔 ${retryIntervalMs}ms 后尝试下一个上游 ${nextCandidate.name}...`
+        );
+        await sleep(retryIntervalMs);
+      } else {
+        logger.warn(
+          `[upstream-fallback] ${candidate.name} 失败 (${status || 'network error'}: ${error.message?.substring(0, 100)})，` +
+          (nextCandidate ? `尝试下一个上游 ${nextCandidate.name}...` : '没有更多上游可尝试')
+        );
+      }
     }
   }
   logger.error('[upstream-fallback] 所有上游均失败');

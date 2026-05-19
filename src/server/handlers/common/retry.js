@@ -258,7 +258,8 @@ function getStatus(error) {
 /**
  * 带 429/503 重试的执行器。
  * 核心策略：
- * - 只有上游错误响应体能提取到等待间隔/恢复时间时才重试。
+ * - 429 只有上游错误响应体能提取到等待间隔/恢复时间时才重试。
+ * - 503 容量/资源临时不可用直接按固定间隔重试，不依赖上游等待提示。
  * - 实际等待时间使用配置的固定间隔，避免短间隔把 503 打成 429。
  * - 长时间 429 额度耗尽会进入模型组冷却；只有开启重试轮询可用 token 时才继续尝试。
  *
@@ -296,8 +297,8 @@ export async function with429Retry(fn, maxRetries, options = {}, legacyOnAttempt
       const modelId = retryOptions.modelId || null;
       const previousTokenId = getCurrentTokenId(retryOptions);
 
-      if (!hint.hasRetryHint) {
-        logger.warn(`${loggerPrefix}收到 ${errorType}，但错误响应体未提供等待间隔/恢复时间，按不可重试处理`);
+      if (status === 429 && !hint.hasRetryHint) {
+        logger.warn(`${loggerPrefix}收到 429，但错误响应体未提供等待间隔/恢复时间，按不可重试处理`);
         throw error;
       }
 
@@ -318,9 +319,13 @@ export async function with429Retry(fn, maxRetries, options = {}, legacyOnAttempt
         shouldUseCredits = true;
       }
 
+      const hintText = hint.hasRetryHint
+        ? `（上游提示≈${hint.explicitDelayMs}ms）`
+        : '（上游未提示等待时间）';
+
       logger.warn(
         `${loggerPrefix}收到 ${errorType}，等待固定间隔 ${retryIntervalMs}ms 后进行第 ${nextAttempt} 次重试（共 ${retries} 次）` +
-        `（上游提示≈${hint.explicitDelayMs}ms）` +
+        hintText +
         (shouldUseCredits ? '（使用积分）' : '') +
         (canPollTokenForRetry ? '（重试前重新轮询可用Token）' : '')
       );

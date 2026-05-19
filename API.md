@@ -266,7 +266,7 @@ curl http://localhost:8045/v1/chat/completions \
 
 ### 429/503 自动重试配置
 
-所有 429/503 重试仅通过服务端配置控制。只有上游错误响应体能提取到等待间隔或资源恢复时间时才会重试；提取不到时直接返回错误，避免盲目重试。
+所有 429/503 重试仅通过服务端配置控制。503 按固定间隔统一重试，包括切换下一个上游前的等待；429 只有上游错误响应体能提取到等待间隔或资源恢复时间时才会重试，提取不到时直接返回错误。
 
 - 全局默认重试配置（服务端配置）：
   - 文件：`config.json` 中的 `other.retryTimes`、`other.retryIntervalMs`、`other.retryPollTokenWithQuota`
@@ -282,7 +282,7 @@ curl http://localhost:8045/v1/chat/completions \
     }
     ```
   - `retryTimes`：最大重试次数（默认 3 次）。
-  - `retryIntervalMs`：固定重试间隔（默认 10000ms），不再使用短间隔指数退避。
+  - `retryIntervalMs`：固定重试间隔（默认 10000ms），503 和可重试 429 都使用该间隔，不再使用短间隔指数退避。
   - `retryPollTokenWithQuota`：开启后，重试前重新轮询对当前模型组仍有额度且未冷却的 Token。
   - 长时间 429 额度耗尽会进入模型组冷却；未开启 Token 轮询时不会继续重试。
 
