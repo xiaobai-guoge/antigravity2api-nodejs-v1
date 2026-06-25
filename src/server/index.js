@@ -24,6 +24,7 @@ import openaiRouter from '../routes/openai.js';
 import geminiRouter from '../routes/gemini.js';
 import claudeRouter from '../routes/claude.js';
 import cliRouter from '../routes/cli.js';
+import responsesRouter from '../routes/responses.js';
 
 const publicDir = getPublicDir();
 
@@ -123,6 +124,7 @@ app.use((req, res, next) => {
 
 // OpenAI 兼容 API
 app.use('/v1', openaiRouter);
+app.use('/v1', responsesRouter);
 
 // Gemini 兼容 API
 app.use('/v1beta', geminiRouter);
