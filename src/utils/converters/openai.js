@@ -2,6 +2,7 @@
 import config from '../../config/config.js';
 import { extractSystemInstruction } from '../utils.js';
 import { convertOpenAIToolsToAntigravity } from '../toolConverter.js';
+import logger from '../logger.js';
 import {
   getSignatureContext,
   pushUserMessage,
@@ -135,11 +136,14 @@ export function generateRequestBody(openaiMessages, modelName, parameters, opena
   const tools = convertOpenAIToolsToAntigravity(openaiTools, token.sessionId, actualModelName);
   const hasTools = tools && tools.length > 0;
   //console.log(JSON.stringify(tools, null, 2))
-  return buildRequestBody({
+  const requestBody = buildRequestBody({
     contents: openaiMessageToAntigravity(filteredMessages, enableThinking, actualModelName, token.sessionId, hasTools),
     tools: tools,
     generationConfig: generateGenerationConfig(parameters, enableThinking, actualModelName),
     sessionId: token.sessionId,
     systemInstruction: mergedSystemInstruction
   }, token, actualModelName);
+
+  logger.info(`[RequestBodyBuilder] model=${modelName} actualModel=${actualModelName} body=${JSON.stringify(requestBody)}`);
+  return requestBody;
 }
