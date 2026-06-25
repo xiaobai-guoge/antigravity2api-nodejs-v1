@@ -1,12 +1,12 @@
 {
   "api": {
     "production": {
-      "url": "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
-      "noStreamUrl": "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-      "modelsUrl": "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-      "recordTrajectory": "https://cloudcode-pa.googleapis.com/v1internal:recordTrajectoryAnalytics",
-      "recordCodeAssistMetrics": "https://cloudcode-pa.googleapis.com/v1internal:recordCodeAssistMetrics",
-      "host": "cloudcode-pa.googleapis.com"
+      "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+      "noStreamUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
+      "modelsUrl": "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      "recordTrajectory": "https://daily-cloudcode-pa.googleapis.com/v1internal:recordTrajectoryAnalytics",
+      "recordCodeAssistMetrics": "https://daily-cloudcode-pa.googleapis.com/v1internal:recordCodeAssistMetrics",
+      "host": "daily-cloudcode-pa.googleapis.com"
     },
     "daily": {
       "url": "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
