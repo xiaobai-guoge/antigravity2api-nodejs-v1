@@ -181,7 +181,9 @@ app.use((req, res, next) => {
     '/v1/organization',
     '/v1/usage',
     // Gemini API 相关端点
-    '/v1beta/models'
+    '/v1beta/models',
+    // Responses API 相关端点
+    '/v1/responses'
   ];
 
   const path = req.path;
