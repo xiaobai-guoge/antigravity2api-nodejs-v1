@@ -13,5 +13,6 @@ const router = Router();
  * 处理 OpenAI Responses 格式请求
  */
 router.post('/responses', handleResponsesRequest);
+router.post('/responses/compact', handleResponsesRequest);
 
 export default router;

@@ -3,6 +3,7 @@
  * 处理 /v1/responses 请求，支持流式和非流式响应
  */
 
+import axios from 'axios';
 import { generateAssistantResponse, generateAssistantResponseNoStream, getModelsWithQuotas } from '../../api/client.js';
 import { generateRequestBody, prepareImageRequest } from '../../utils/utils.js';
 import { buildOpenAIErrorPayload } from '../../utils/errors.js';
@@ -17,6 +18,50 @@ import {
   endStream,
   with429Retry
 } from '../stream.js';
+import crypto from 'crypto';
+
+// Encryption/decryption helper for context compaction
+const COMPACT_SECRET = process.env.JWT_SECRET || 'default_compaction_secret_key_123456';
+const ALGORITHM = 'aes-256-cbc';
+const KEY = crypto.scryptSync(COMPACT_SECRET, 'salt', 32);
+
+function encrypt(text) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(text, 'utf8'),
+    cipher.final()
+  ]);
+  const combined = Buffer.concat([iv, encrypted]);
+  return combined.toString('base64');
+}
+
+function decrypt(text) {
+  try {
+    if (text.includes(':')) {
+      const parts = text.split(':');
+      if (parts.length < 2) return '';
+      const iv = Buffer.from(parts.shift(), 'hex');
+      const encryptedText = Buffer.from(parts.join(':'), 'hex');
+      const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
+      let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } else {
+      const combined = Buffer.from(text, 'base64');
+      if (combined.length < 16) return '';
+      const iv = combined.subarray(0, 16);
+      const encryptedText = combined.subarray(16);
+      const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
+      const decrypted = decipher.update(encryptedText);
+      return Buffer.concat([decrypted, decipher.final()]).toString('utf8');
+    }
+  } catch (err) {
+    logger.error('解密压缩历史记录失败:', err.message);
+    return '';
+  }
+}
+
 
 // ==================== ID 生成辅助函数 ====================
 export function generateResponsesID() {
@@ -30,6 +75,10 @@ export function generateItemID() {
 // ==================== SSE 写入辅助函数 ====================
 export const writeResponsesStreamData = (res, eventType, data) => {
   if (res.writableEnded) return;
+  if (res.isWebSocket) {
+    res.sendEvent(eventType, data);
+    return;
+  }
   res.write(`event: ${eventType}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
   if (typeof res.flush === 'function') {
@@ -60,7 +109,11 @@ function extractReasoningText(item) {
 export function responsesInputToChatMessages(instructions, input) {
   const messages = [];
   if (instructions && typeof instructions === 'string' && instructions.trim() !== '') {
-    messages.push({ role: 'system', content: instructions });
+    let systemPrompt = instructions;
+    if (!systemPrompt.includes('Chinese')) {
+      systemPrompt += '\n\nIMPORTANT: If the user communicates or asks questions in Chinese, you MUST reply in Chinese. (如果用户使用中文交流或提问，请务必使用中文回复。更多的时候用户需要中文回复)';
+    }
+    messages.push({ role: 'system', content: systemPrompt });
   }
 
   if (!input) {
@@ -91,6 +144,35 @@ export function responsesInputToChatMessages(instructions, input) {
         continue;
       }
       
+      if (itemType === 'compaction_summary' || itemType === 'compaction') {
+        const decrypted = decrypt(item.encrypted_content);
+        if (decrypted) {
+          try {
+            const data = JSON.parse(decrypted);
+            if (data.summary) {
+              messages.push({
+                role: 'system',
+                content: `[System]: Here is a summary of the preceding conversation:\n${data.summary}`
+              });
+            }
+          } catch (e) {
+            messages.push({
+              role: 'system',
+              content: `[System]: Here is a summary of the preceding conversation:\n${decrypted}`
+            });
+          }
+        }
+        continue;
+      }
+
+      if (itemType === 'compaction_trigger') {
+        messages.push({
+          role: 'user',
+          content: 'Summarize the conversation so far. Please write the summary in Chinese. Focus on technical details, plans, decisions, and outcomes. Keep it structured and concise. (请使用中文对目前的对话进行总结，重点关注技术细节、计划、决定和结果，保持结构化和简洁。)'
+        });
+        continue;
+      }
+
       if (itemType === 'function_call') {
         let args = item.arguments;
         if (typeof args !== 'string') {
@@ -334,17 +416,19 @@ export class StreamState {
   
   getChatOutput() {
     const outputs = [];
-    if (this.reasoning.length > 0) {
-      outputs.push({
-        type: 'reasoning',
-        id: this.reasoningItemID || generateItemID(),
-        summary: [{
-          type: 'summary_text',
-          text: this.reasoning
-        }]
-      });
-    }
-    
+
+    // NOTE: We intentionally do NOT add a separate 'reasoning' output item to the output array.
+    // The reasoning/thinking block is correctly emitted via streaming SSE events
+    // (response.output_item.added / response.output_item.done for type:'reasoning'),
+    // but including it in the final output array causes Codex CLI's remote compaction v2
+    // to fail with "expected exactly one compaction output item, got 0 from N output items"
+    // because compaction expects a single message item with non-empty text.
+
+    // When the model returns only reasoning and no text (or whitespace-only text),
+    // use the reasoning as fallback text so the message item is always non-empty.
+    // Use trim() to treat whitespace-only text as empty (some models return '\n' etc).
+    const effectiveText = this.text.trim().length > 0 ? this.text : this.reasoning;
+
     if (this.messageItemID || Object.keys(this.toolCalls).length === 0) {
       outputs.push({
         type: 'message',
@@ -352,7 +436,7 @@ export class StreamState {
         role: 'assistant',
         content: [{
           type: 'output_text',
-          text: this.text
+          text: effectiveText
         }],
         status: 'completed'
       });
@@ -593,59 +677,77 @@ export function processChunkData(data, state, res) {
   }
 }
 
-export function finalizeStream(state, res) {
+export function finalizeStream(state, res, isCompact = false) {
   if (state.completedSent) return;
+  
+  // DEBUG: Log state at finalization to diagnose compaction issues
+  logger.info(`[finalizeStream] DEBUG model=${state.model} text.len=${state.text.length} reasoning.len=${state.reasoning.length} messageItemID=${state.messageItemID} toolCalls=${Object.keys(state.toolCalls).length}`);
   
   ensureCreated(state, res);
   closeReasoningItem(state, res);
   
-  // reasoning fallback
-  if (!state.messageItemID && state.text.length === 0 && state.reasoning.length > 0 && Object.keys(state.toolCalls).length === 0) {
-    const fallbackText = state.reasoning;
-    if (fallbackText.trim() !== '') {
-      state.messageItemID = generateItemID();
-      state.messageIndex = state.allocOutputIndex();
-      
-      writeResponsesStreamData(res, 'response.output_item.added', {
-        type: 'response.output_item.added',
-        sequence_number: state.sequenceNumber++,
-        output_index: state.messageIndex,
-        item: {
-          type: 'message',
-          id: state.messageItemID,
-          role: 'assistant',
-          status: 'in_progress',
-          content: [{ type: 'output_text' }]
-        }
-      });
-      
-      state.textPartOpen = true;
-      writeResponsesStreamData(res, 'response.content_part.added', {
-        type: 'response.content_part.added',
-        sequence_number: state.sequenceNumber++,
-        output_index: state.messageIndex,
-        content_index: 0,
-        item_id: state.messageItemID,
-        part: {
-          type: 'output_text',
-          text: ''
-        }
-      });
-      
-      state.text = fallbackText;
-      writeResponsesStreamData(res, 'response.output_text.delta', {
-        type: 'response.output_text.delta',
-        sequence_number: state.sequenceNumber++,
-        output_index: state.messageIndex,
-        content_index: 0,
-        item_id: state.messageItemID,
-        delta: fallbackText
-      });
-    }
+  // Unified fallback: fires when no message item was opened during streaming
+  // (model returned only thinking, nothing at all, or an empty stream).
+  // Without this, no SSE response.output_item.done is emitted, causing Codex
+  // compaction to fail with "got 0 from 0 output items" because Codex counts
+  // from SSE events, NOT from response.completed.response.output.
+  if (!state.messageItemID && Object.keys(state.toolCalls).length === 0) {
+    // Determine fallback text:
+    //   Case 1 (model returned only reasoning): use reasoning as summary text
+    //   Case 2 (model returned absolutely nothing): use placeholder so Codex
+    //           compaction gets 1 valid item instead of crashing
+    const fallbackText = state.reasoning.trim().length > 0
+      ? state.reasoning
+      : '[Context summary unavailable: model returned empty response. Please retry.]';
+
+    state.messageItemID = generateItemID();
+    state.messageIndex = state.allocOutputIndex();
+    
+    writeResponsesStreamData(res, 'response.output_item.added', {
+      type: 'response.output_item.added',
+      sequence_number: state.sequenceNumber++,
+      output_index: state.messageIndex,
+      item: {
+        type: 'message',
+        id: state.messageItemID,
+        role: 'assistant',
+        status: 'in_progress',
+        content: [{ type: 'output_text' }]
+      }
+    });
+    
+    state.textPartOpen = true;
+    writeResponsesStreamData(res, 'response.content_part.added', {
+      type: 'response.content_part.added',
+      sequence_number: state.sequenceNumber++,
+      output_index: state.messageIndex,
+      content_index: 0,
+      item_id: state.messageItemID,
+      part: {
+        type: 'output_text',
+        text: ''
+      }
+    });
+    
+    state.text = fallbackText;
+    writeResponsesStreamData(res, 'response.output_text.delta', {
+      type: 'response.output_text.delta',
+      sequence_number: state.sequenceNumber++,
+      output_index: state.messageIndex,
+      content_index: 0,
+      item_id: state.messageItemID,
+      delta: fallbackText
+    });
   }
   
   // Close message
   if (state.messageItemID) {
+    // Use effectiveText (same as getChatOutput) for the final output_item.done event so
+    // Codex compaction sees a non-empty text even when state.text is whitespace-only.
+    // This matches the case where model streams '\n' as text but has non-empty reasoning:
+    // the streamed delta is '\n', but the finalized item should contain the reasoning content.
+    const effectiveText = state.text.trim().length > 0 ? state.text : state.reasoning;
+    
     if (state.textPartOpen) {
       writeResponsesStreamData(res, 'response.output_text.done', {
         type: 'response.output_text.done',
@@ -653,7 +755,7 @@ export function finalizeStream(state, res) {
         output_index: state.messageIndex,
         content_index: 0,
         item_id: state.messageItemID,
-        text: state.text
+        text: effectiveText
       });
       
       writeResponsesStreamData(res, 'response.content_part.done', {
@@ -664,7 +766,7 @@ export function finalizeStream(state, res) {
         item_id: state.messageItemID,
         part: {
           type: 'output_text',
-          text: state.text
+          text: effectiveText
         }
       });
     }
@@ -677,7 +779,7 @@ export function finalizeStream(state, res) {
         type: 'message',
         id: state.messageItemID,
         role: 'assistant',
-        content: [{ type: 'output_text', text: state.text }],
+        content: [{ type: 'output_text', text: effectiveText }],
         status: 'completed'
       }
     });
@@ -720,6 +822,35 @@ export function finalizeStream(state, res) {
     });
   }
   
+  if (isCompact) {
+    const encrypted = encrypt(JSON.stringify({ summary: state.text }));
+    const compactionItemID = generateItemID();
+    const compactionIndex = state.allocOutputIndex();
+    
+    writeResponsesStreamData(res, 'response.output_item.added', {
+      type: 'response.output_item.added',
+      sequence_number: state.sequenceNumber++,
+      output_index: compactionIndex,
+      item: {
+        type: 'compaction_summary',
+        id: compactionItemID,
+        encrypted_content: encrypted
+      }
+    });
+    
+    writeResponsesStreamData(res, 'response.output_item.done', {
+      type: 'response.output_item.done',
+      sequence_number: state.sequenceNumber++,
+      output_index: compactionIndex,
+      item: {
+        type: 'compaction_summary',
+        id: compactionItemID,
+        encrypted_content: encrypted,
+        status: 'completed'
+      }
+    });
+  }
+  
   let status = 'completed';
   let incompleteDetails = null;
   if (state.finishReason === 'length') {
@@ -729,16 +860,18 @@ export function finalizeStream(state, res) {
   
   state.completedSent = true;
   
-  const responsePayload = {
-    id: state.responseID,
-    object: 'response',
-    model: state.model,
-    status: status,
-    output: state.getChatOutput(),
-    usage: state.usage
-  };
+  const responsePayload = isCompact
+    ? createResponsesNonStreamResponse(state, true)
+    : {
+        id: state.responseID,
+        object: 'response',
+        model: state.model,
+        status: status,
+        output: state.getChatOutput(),
+        usage: state.usage
+      };
   
-  if (incompleteDetails) {
+  if (!isCompact && incompleteDetails) {
     responsePayload.incomplete_details = incompleteDetails;
   }
   
@@ -749,7 +882,7 @@ export function finalizeStream(state, res) {
   });
 }
 
-function createResponsesNonStreamResponse(state) {
+function createResponsesNonStreamResponse(state, isCompact = false) {
   let status = 'completed';
   let incompleteDetails = null;
   if (state.finishReason === 'length') {
@@ -757,6 +890,41 @@ function createResponsesNonStreamResponse(state) {
     incompleteDetails = { reason: 'max_output_tokens' };
   }
   
+  if (isCompact) {
+    const encrypted = encrypt(JSON.stringify({ summary: state.text }));
+    const output = [
+      {
+        id: generateItemID(),
+        type: 'message',
+        status: 'completed',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Compacted conversation history' }]
+      },
+      {
+        id: state.messageItemID || generateItemID(),
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{ type: 'output_text', text: state.text }]
+      },
+      {
+        id: generateItemID(),
+        type: 'compaction_summary',
+        encrypted_content: encrypted
+      }
+    ];
+
+    return {
+      id: state.responseID,
+      object: 'response.compaction',
+      created_at: Math.floor(Date.now() / 1000),
+      status: status,
+      output: output,
+      usage: state.usage
+    };
+  }
+
   const responsePayload = {
     id: state.responseID,
     object: 'response',
@@ -782,7 +950,44 @@ function createResponsesNonStreamResponse(state) {
  */
 export const handleResponsesRequest = async (req, res) => {
   const body = req.body || {};
-  const { input, instructions, model, stream = false, tools, tool_choice, max_output_tokens, temperature, top_p } = body;
+  let { model } = body;
+  const bodyKeys = Object.keys(body);
+  const inputLength = body.input ? body.input.length : 0;
+  const hasTools = !!body.tools;
+  const instructionsSnippet = body.instructions ? body.instructions.slice(0, 150) : '';
+  let isCompact = (typeof model === 'string' && model.endsWith('-openai-compact')) || req.path.endsWith('/compact');
+  if (!isCompact && body.client_metadata) {
+    let turnMeta = body.client_metadata['x-codex-turn-metadata'];
+    if (typeof turnMeta === 'string') {
+      try {
+        const metadata = JSON.parse(turnMeta);
+        if (metadata && metadata.request_kind === 'compaction') {
+          isCompact = true;
+        }
+      } catch (e) {
+        // ignore parse error
+      }
+    }
+  }
+  if (!isCompact && req.headers['x-codex-turn-metadata']) {
+    try {
+      const metadata = JSON.parse(req.headers['x-codex-turn-metadata']);
+      if (metadata && metadata.request_kind === 'compaction') {
+        isCompact = true;
+      }
+    } catch (e) {
+      // ignore parse error
+    }
+  }
+  if (!isCompact && typeof body.instructions === 'string' && body.instructions.includes('Summarize the conversation')) {
+    isCompact = true;
+  }
+  if (isCompact) {
+    model = 'gemini-3.5-flash-low';
+  }
+  logger.info(`[responses] INCOMING REQUEST path=${req.path} originalUrl=${req.originalUrl} model=${model} isCompact=${isCompact} bodyKeys=${JSON.stringify(bodyKeys)} inputLength=${inputLength} hasTools=${hasTools} instructionsSnippet="${instructionsSnippet}" headers=${JSON.stringify(req.headers)}`);
+  const { input, instructions, tools, tool_choice, max_output_tokens, temperature, top_p, reasoning } = body;
+  const stream = (body.stream === true);
 
   try {
     if (!body || typeof body !== 'object') {
@@ -794,6 +999,55 @@ export const handleResponsesRequest = async (req, res) => {
     if (input === undefined || input === null) {
       return res.status(400).json({ error: 'input is required' });
     }
+
+    // 0. 判断是否为非反重力模型（即 GPT 模型等，需要代理到 sub2api）
+    let cleanModel = model;
+    if (model.endsWith('-openai-compact')) {
+      cleanModel = model.slice(0, -15);
+    }
+    const isAntigravity = cleanModel.startsWith('gemini') || 
+                          cleanModel.startsWith('claude') || 
+                          cleanModel === 'rev19-uic3-1p' || 
+                          cleanModel === 'gpt-oss-120b-medium';
+    
+    if (!isAntigravity) {
+      logger.info(`非反重力模型 ${model}，代理到 sub2api`);
+      const sub2ApiKey = process.env.SUB2API_KEY || 'sk-2f4e9c13844bdac1a3a174152ae6d6ae9c1cbf474909176240db2ee513322e88';
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sub2ApiKey}`
+      };
+      
+      try {
+        const targetUrl = isCompact ? 'https://sub2.jinyus.top/v1/responses/compact' : `https://sub2.jinyus.top${req.originalUrl}`;
+        const sub2Response = await axios({
+          method: 'post',
+          url: targetUrl,
+          data: body,
+          headers: headers,
+          timeout: 300000,
+          responseType: stream ? 'stream' : 'json'
+        });
+        
+        if (stream) {
+          res.status(sub2Response.status);
+          for (const [k, v] of Object.entries(sub2Response.headers)) {
+            res.setHeader(k, v);
+          }
+          sub2Response.data.pipe(res);
+        } else {
+          return res.status(sub2Response.status).json(sub2Response.data);
+        }
+        return;
+      } catch (err) {
+        logger.error(`代理到 sub2api 失败: ${err.message}`);
+        const statusCode = err.response?.status || 500;
+        return res.status(statusCode).json(err.response?.data || { error: { message: err.message } });
+      }
+    }
+
+    // 否则是反重力模型，我们本地处理
+    model = cleanModel;
 
     // 1. 将 input + instructions 转为 standard openaiMessages
     const rawMessages = responsesInputToChatMessages(instructions, input);
@@ -808,6 +1062,27 @@ export const handleResponsesRequest = async (req, res) => {
     if (tool_choice !== undefined) {
       params.tool_choice = responsesToolChoiceToChatToolChoice(tool_choice);
     }
+
+    // 3. Map Responses API 'reasoning.effort' → thinking_budget.
+    //    Codex sends reasoning.effort for normal chat (from model_reasoning_effort config).
+    //    Compaction requests typically do NOT include reasoning field.
+    //
+    //    IMPORTANT: Do NOT set thinking_budget=0 for compaction (no-reasoning) requests.
+    //    gemini-* models (e.g. gemini-3.5-flash-low) REQUIRE thinking to generate text.
+    //    With thinkingBudget:0 the API disables thinking entirely and the model returns
+    //    empty output → state.text='' → Codex rejects: "got 0 from 1 output items".
+    //
+    //    Instead: when no reasoning field is present (compaction), leave thinking_budget
+    //    unset so toGenerationConfig uses the config default (small budget, includeThoughts:true).
+    //    The thinking content goes to state.reasoning; getChatOutput() returns the
+    //    message item using state.text (the actual compaction summary), giving Codex
+    //    exactly 1 valid output item.
+    const effort = reasoning?.effort || body.reasoning_effort;
+    if (effort !== undefined) {
+      const EFFORT_BUDGET_MAP = { low: 1024, medium: 4096, high: 8192, xhigh: 16000 };
+      params.thinking_budget = EFFORT_BUDGET_MAP[effort] ?? 4096;
+    }
+    // else: no thinking_budget set → toGenerationConfig uses config default → thinking enabled
 
     const isImageModel = model.includes('-image');
     let token = null;
@@ -880,7 +1155,7 @@ export const handleResponsesRequest = async (req, res) => {
           }
           
           processChunkData({ type: 'text', content: content || '' }, state, res);
-          finalizeStream(state, res);
+          finalizeStream(state, res, isCompact);
         } else {
           await with429Retry(
             (attempt, shouldUseCredits) => {
@@ -895,7 +1170,7 @@ export const handleResponsesRequest = async (req, res) => {
             createRetryOptions('responses.stream ')
           );
 
-          finalizeStream(state, res);
+          finalizeStream(state, res, isCompact);
         }
 
         clearInterval(heartbeatTimer);
@@ -975,7 +1250,8 @@ export const handleResponsesRequest = async (req, res) => {
         }
       }
 
-      res.json(createResponsesNonStreamResponse(state));
+      logger.info(`[nostream] DEBUG model=${state.model} text.len=${state.text.length} reasoning.len=${state.reasoning.length} messageItemID=${state.messageItemID}`);
+      res.json(createResponsesNonStreamResponse(state, isCompact));
     }
   } catch (error) {
     logger.error('Responses 生成响应失败:', error.message);

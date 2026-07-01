@@ -137,7 +137,8 @@ export const DEFAULT_GENERATION_PARAMS = {
 export const REASONING_EFFORT_MAP = {
   low: 1024,
   medium: 16000,
-  high: 32000
+  high: 32000,
+  xhigh: 32000
 };
 
 // ==================== 图片相关常量 ====================

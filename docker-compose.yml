@@ -3,8 +3,9 @@ version: '3.8'
 services:
   antigravity2api:
     build: .
+    container_name: antigravity2api-nodejs
     ports:
-      - "8045:8045"
+      - "127.0.0.1:8045:8045"
     environment:
       - API_KEY=${API_KEY:-sk-text}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
@@ -14,8 +15,13 @@ services:
       - SYSTEM_INSTRUCTION=${SYSTEM_INSTRUCTION:-}
       - IMAGE_BASE_URL=${IMAGE_BASE_URL:-}
     volumes:
-      - ./data:/app/data
+      - /opt/antigravity2api-data:/app/data
       - ./public/images:/app/public/images
       - ./.env:/app/.env
-      - ./config.json:/app/config.json
+      - /opt/antigravity2api-data/config.json:/app/config.json
     restart: unless-stopped
+
+networks:
+  default:
+    name: new-api_default
+    external: true

@@ -25,6 +25,7 @@ import geminiRouter from '../routes/gemini.js';
 import claudeRouter from '../routes/claude.js';
 import cliRouter from '../routes/cli.js';
 import responsesRouter from '../routes/responses.js';
+import { handleUpgrade as handleResponsesUpgrade } from './responsesWs.js';
 
 const publicDir = getPublicDir();
 
@@ -211,7 +212,29 @@ const server = app.listen(config.server.port, config.server.host, () => {
     logMaxFiles: config.log?.maxFiles,
     logMaxMemory: config.log?.maxMemory
   });
-  logger.info('WebSocket 日志服务已启动: /ws/logs');
+
+  // 统一的 WebSocket 升级事件处理分发
+  server.on('upgrade', (request, socket, head) => {
+    const pathname = request.url.split('?')[0];
+    logger.info(`收到 Upgrade 请求: url=${request.url} path=${pathname}`);
+    if (pathname === '/v1/responses') {
+      handleResponsesUpgrade(request, socket, head);
+    } else if (pathname === '/ws/logs') {
+      if (logWsServer.wss) {
+        logWsServer.wss.handleUpgrade(request, socket, head, (ws) => {
+          logWsServer.wss.emit('connection', ws, request);
+        });
+      } else {
+        logger.error('logWsServer.wss 未初始化');
+        socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+        socket.destroy();
+      }
+    } else {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+  });
+  logger.info('WebSocket 服务已启动: /ws/logs 和 /v1/responses');
 });
 
 server.on('error', (error) => {

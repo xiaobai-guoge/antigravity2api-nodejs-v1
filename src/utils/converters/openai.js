@@ -45,9 +45,18 @@ function extractImagesFromContent(content) {
   return result;
 }
 
+function getAssistantTextContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(p => p.type === 'text' ? (p.text || '') : '').join('');
+  }
+  return '';
+}
+
 function handleAssistantMessage(message, antigravityMessages, enableThinking, actualModelName, sessionId, hasTools) {
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
-  const hasContent = message.content && message.content.trim() !== '';
+  const textContent = getAssistantTextContent(message.content);
+  const hasContent = textContent && textContent.trim() !== '';
   const { reasoningSignature, reasoningContent, toolSignature, toolContent } = getSignatureContext(sessionId, actualModelName, hasTools);
   
   const toolCalls = hasToolCalls
@@ -67,7 +76,7 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
     let signature = null;
     
     if (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0) {
-      // 消息自带思考内容，使用消息自带的签名或缓存签名
+      // 消息自带思考内容，使用消息自带的签名 or 缓存签名
       reasoningText = message.reasoning_content;
       signature = message.thoughtSignature || reasoningSignature || toolSignature;
     } else {
@@ -86,7 +95,7 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
     }
   }
   if (hasContent) {
-    const part = { text: message.content.trimEnd() };
+    const part = { text: textContent.trimEnd() };
     parts.push(part);
   }
   if (!enableThinking && parts[0]) delete parts[0].thoughtSignature;

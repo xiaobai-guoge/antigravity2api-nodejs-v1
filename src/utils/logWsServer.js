@@ -77,7 +77,7 @@ class LogWebSocketServer {
      * @param {http.Server} server - HTTP 服务器实例
      */
     initialize(server) {
-        this.wss = new WebSocketServer({ server, path: '/ws/logs' });
+        this.wss = new WebSocketServer({ noServer: true });
 
         this.wss.on('connection', (ws, req) => {
             this.clients.add(ws);

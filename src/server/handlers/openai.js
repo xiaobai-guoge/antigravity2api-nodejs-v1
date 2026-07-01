@@ -34,6 +34,16 @@ export const handleOpenAIRequest = async (req, res) => {
   const body = req.body || {};
   const { messages, model, stream = false, tools, ...params } = body;
 
+  // [COMPACT-DIAG] 请求入口日志
+  {
+    const bodyBytes = Buffer.byteLength(JSON.stringify(body), 'utf8');
+    const msgCount = Array.isArray(messages) ? messages.length : 0;
+    const lastMsg = Array.isArray(messages) && messages.length > 0 ? messages[messages.length - 1] : null;
+    const lastMsgSnippet = lastMsg ? String(lastMsg.content || '').slice(0, 300).replace(/\n/g, ' ') : '';
+    const isCompactHint = lastMsgSnippet.includes('Summarize') || lastMsgSnippet.includes('compaction') || lastMsgSnippet.includes('summarize');
+    logger.info(`[chat] INCOMING model=${model} stream=${stream} bodyBytes=${bodyBytes} msgCount=${msgCount} isCompactHint=${isCompactHint} lastMsgRole=${lastMsg?.role} lastMsgSnippet="${lastMsgSnippet.slice(0, 150)}"`); 
+  }
+
   try {
     const validation = validateIncomingChatRequest('openai', body);
     if (!validation.ok) {
@@ -63,6 +73,7 @@ export const handleOpenAIRequest = async (req, res) => {
     if (!await applyTokenState(await tokenManager.getToken(model))) {
       throw new Error('没有可用的token，请运行 npm run login 获取token');
     }
+    logger.info(`[chat] BEFORE_API model=${model} requestBodyBytes=${Buffer.byteLength(JSON.stringify(requestBody), 'utf8')} stream=${stream}`);
 
     const refreshQuota = async () => {
       if (!tokenId || !token) return;
@@ -154,6 +165,7 @@ export const handleOpenAIRequest = async (req, res) => {
           );
 
           writeStreamData(res, { ...createStreamChunk(id, created, model, {}, hasToolCall ? 'tool_calls' : 'stop'), usage: usageData });
+          logger.info(`[chat] STREAM_DONE model=${model} hasToolCall=${hasToolCall} usage=${JSON.stringify(usageData)}`);
         }
 
         clearInterval(heartbeatTimer);
@@ -203,6 +215,7 @@ export const handleOpenAIRequest = async (req, res) => {
           safeRetries,
           createRetryOptions('chat.fake_no_stream ')
         );
+        logger.info(`[chat] FAKE_NOSTREAM_RESULT model=${model} content.len=${content.length} reasoning.len=${reasoningContent.length} toolCalls=${toolCalls.length} usage=${JSON.stringify(usageData)}`);
 
         // 构建非流式响应
         const message = { role: 'assistant' };
@@ -251,6 +264,7 @@ export const handleOpenAIRequest = async (req, res) => {
         safeRetries,
         createRetryOptions('chat.no_stream ')
       );
+      logger.info(`[chat] NOSTREAM_RESULT model=${model} content.len=${(content||'').length} reasoning.len=${(reasoningContent||'').length} toolCalls=${(toolCalls||[]).length} usage=${JSON.stringify(usage)}`);
 
       // DeepSeek 格式：reasoning_content 在 content 之前
       const message = { role: 'assistant' };

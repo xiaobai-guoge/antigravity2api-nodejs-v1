@@ -144,7 +144,8 @@ export function modelMapping(modelName) {
   if (modelName === 'claude-opus-4-5-thinking') return 'claude-opus-4-6-thinking';
   if (modelName === 'claude-opus-4-6') return 'claude-opus-4-6-thinking';
   if (modelName === 'gemini-2.5-flash-thinking') return 'gemini-2.5-flash';
-  if (modelName === 'gemini-3.5-flash-low') return 'gemini-2.5-flash';
+  if (modelName === 'gemini-3.5-flash') return 'gemini-3.5-flash-low';
+  if (modelName === 'gemini-3.1-pro-low') return 'gemini-3.1-pro-low';
   return modelName;
 }
 
@@ -168,9 +169,10 @@ export function generateGenerationConfig(parameters, enableThinking, actualModel
   };
 
   // 处理 reasoning_effort 到 thinking_budget 的转换
-  if (normalizedParams.thinking_budget === undefined && parameters.reasoning_effort !== undefined) {
+  const effort = parameters.reasoning_effort || parameters.reasoning?.effort;
+  if (normalizedParams.thinking_budget === undefined && effort !== undefined) {
     const defaultThinkingBudget = config.defaults.thinking_budget ?? 1024;
-    normalizedParams.thinking_budget = REASONING_EFFORT_MAP[parameters.reasoning_effort] ?? defaultThinkingBudget;
+    normalizedParams.thinking_budget = REASONING_EFFORT_MAP[effort] ?? defaultThinkingBudget;
   }
 
   // 使用统一的参数转换函数
