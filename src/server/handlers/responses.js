@@ -1000,7 +1000,7 @@ export const handleResponsesRequest = async (req, res) => {
       return res.status(400).json({ error: 'input is required' });
     }
 
-    // 0. 判断是否为非反重力模型（即 GPT 模型等，需要代理到 sub2api）
+    // 0. 判断是否为非反重力模型（即 GPT 模型等），直接拒绝
     let cleanModel = model;
     if (model.endsWith('-openai-compact')) {
       cleanModel = model.slice(0, -15);
@@ -1011,43 +1011,19 @@ export const handleResponsesRequest = async (req, res) => {
                           cleanModel === 'gpt-oss-120b-medium';
     
     if (!isAntigravity) {
-      logger.info(`非反重力模型 ${model}，代理到 sub2api`);
-      const sub2ApiKey = process.env.SUB2API_KEY || 'sk-2f4e9c13844bdac1a3a174152ae6d6ae9c1cbf474909176240db2ee513322e88';
-      const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${sub2ApiKey}`
-      };
-      
-      try {
-        const targetUrl = isCompact ? 'https://sub2.jinyus.top/v1/responses/compact' : `https://sub2.jinyus.top${req.originalUrl}`;
-        const sub2Response = await axios({
-          method: 'post',
-          url: targetUrl,
-          data: body,
-          headers: headers,
-          timeout: 300000,
-          responseType: stream ? 'stream' : 'json'
-        });
-        
-        if (stream) {
-          res.status(sub2Response.status);
-          for (const [k, v] of Object.entries(sub2Response.headers)) {
-            res.setHeader(k, v);
-          }
-          sub2Response.data.pipe(res);
-        } else {
-          return res.status(sub2Response.status).json(sub2Response.data);
-        }
-        return;
-      } catch (err) {
-        logger.error(`代理到 sub2api 失败: ${err.message}`);
-        const statusCode = err.response?.status || 500;
-        return res.status(statusCode).json(err.response?.data || { error: { message: err.message } });
-      }
+      logger.warn(`不支持的模型请求: ${model}`);
+      return res.status(400).json({ 
+        error: { 
+          message: `Model ${model} is not supported by this endpoint.`, 
+          type: 'invalid_request_error',
+          code: 'model_not_supported' 
+        } 
+      });
     }
 
     // 否则是反重力模型，我们本地处理
     model = cleanModel;
+
 
     // 1. 将 input + instructions 转为 standard openaiMessages
     const rawMessages = responsesInputToChatMessages(instructions, input);
