@@ -109,11 +109,7 @@ function extractReasoningText(item) {
 export function responsesInputToChatMessages(instructions, input) {
   const messages = [];
   if (instructions && typeof instructions === 'string' && instructions.trim() !== '') {
-    let systemPrompt = instructions;
-    if (!systemPrompt.includes('Chinese')) {
-      systemPrompt += '\n\nIMPORTANT: If the user communicates or asks questions in Chinese, you MUST reply in Chinese. (如果用户使用中文交流或提问，请务必使用中文回复。更多的时候用户需要中文回复)';
-    }
-    messages.push({ role: 'system', content: systemPrompt });
+    messages.push({ role: 'system', content: instructions });
   }
 
   if (!input) {
@@ -414,15 +410,25 @@ export class StreamState {
     return idx;
   }
   
-  getChatOutput() {
+  getChatOutput(isCompact = false) {
     const outputs = [];
 
-    // NOTE: We intentionally do NOT add a separate 'reasoning' output item to the output array.
+    // NOTE: We intentionally do NOT add a separate 'reasoning' output item to the output array when doing compaction.
     // The reasoning/thinking block is correctly emitted via streaming SSE events
     // (response.output_item.added / response.output_item.done for type:'reasoning'),
     // but including it in the final output array causes Codex CLI's remote compaction v2
     // to fail with "expected exactly one compaction output item, got 0 from N output items"
     // because compaction expects a single message item with non-empty text.
+    if (this.reasoning.trim().length > 0 && !isCompact) {
+      outputs.push({
+        type: 'reasoning',
+        id: this.reasoningItemID || generateItemID(),
+        summary: [{
+          type: 'summary_text',
+          text: this.reasoning
+        }]
+      });
+    }
 
     // When the model returns only reasoning and no text (or whitespace-only text),
     // use the reasoning as fallback text so the message item is always non-empty.
@@ -644,7 +650,7 @@ export function processChunkData(data, state, res) {
             id: state.messageItemID,
             role: 'assistant',
             status: 'in_progress',
-            content: [{ type: 'output_text' }]
+            content: [{ type: 'output_text', text: '' }]
           }
         });
       }
@@ -659,7 +665,9 @@ export function processChunkData(data, state, res) {
           item_id: state.messageItemID,
           part: {
             type: 'output_text',
-            text: ''
+            text: '',
+            annotations: [],
+            logprobs: []
           }
         });
       }
@@ -712,7 +720,7 @@ export function finalizeStream(state, res, isCompact = false) {
         id: state.messageItemID,
         role: 'assistant',
         status: 'in_progress',
-        content: [{ type: 'output_text' }]
+        content: [{ type: 'output_text', text: '' }]
       }
     });
     
@@ -725,7 +733,9 @@ export function finalizeStream(state, res, isCompact = false) {
       item_id: state.messageItemID,
       part: {
         type: 'output_text',
-        text: ''
+        text: '',
+        annotations: [],
+        logprobs: []
       }
     });
     
@@ -766,7 +776,9 @@ export function finalizeStream(state, res, isCompact = false) {
         item_id: state.messageItemID,
         part: {
           type: 'output_text',
-          text: effectiveText
+          text: effectiveText,
+          annotations: [],
+          logprobs: []
         }
       });
     }
@@ -867,7 +879,7 @@ export function finalizeStream(state, res, isCompact = false) {
         object: 'response',
         model: state.model,
         status: status,
-        output: state.getChatOutput(),
+        output: state.getChatOutput(isCompact),
         usage: state.usage
       };
   
@@ -930,7 +942,7 @@ function createResponsesNonStreamResponse(state, isCompact = false) {
     object: 'response',
     model: state.model,
     status: status,
-    output: state.getChatOutput(),
+    output: state.getChatOutput(isCompact),
     usage: state.usage
   };
   
